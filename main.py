@@ -1,106 +1,103 @@
 import requests
 from bs4 import BeautifulSoup
-import datetime
-import pytz # 시차 해결용 도구
+import telegram
+import asyncio
+from datetime import datetime
+import os
 
-# ==========================================
-# [사용자 설정] 본인의 봇 토큰과 채팅 ID로 꼭! 다시 바꿔주세요
-TELEGRAM_TOKEN = "7690518189:AAFr5eue6klClHix1rque5DGU0eZFMT2Stc"
-CHAT_ID = "1230013620"
-# ==========================================
+# 1단계: 텔레그램 설정 (깃허브 Secrets에서 불러옴)
+TOKEN = os.environ.get('TELEGRAM_TOKEN')
+CHAT_ID = os.environ.get('CHAT_ID')
 
-def send_telegram(message):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": CHAT_ID, "text": message}
-        requests.post(url, json=payload)
-    except Exception as e:
-        print(f"텔레그램 전송 실패: {e}")
+# 오늘 날짜 구하기 (형식: 2024-02-21 or 2024.02.21)
+today_dash = datetime.now().strftime("%Y-%m-%d")
+today_dot = datetime.now().strftime("%Y.%m.%d")
 
-def get_today_kst():
-    # 미국 서버 시간 대신 '한국 시간(KST)' 기준으로 오늘 날짜를 가져옵니다.
-    kst = pytz.timezone('Asia/Seoul')
-    return datetime.datetime.now(kst).strftime("%Y-%m-%d")
+async def send_msg(text):
+    bot = telegram.Bot(token=TOKEN)
+    await bot.send_message(chat_id=CHAT_ID, text=text)
 
 def check_new_post():
-    today = get_today_kst()
-    print(f"[{today}] 한국 시간 기준으로 공고 확인 시작...")
-
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-
-    # 1. 한국벤처투자 (KVIC)
+    new_posts = []
+    
+    # === 1. 한국벤처투자 (KVIC) ===
     try:
-        url = "https://www.kvic.or.kr/notice/notice01"
-        res = requests.get(url, headers=headers)
-        soup = BeautifulSoup(res.content, 'html.parser')
-        
-        # 첫 번째 글만 보지 않고, 위에서 10개(tr)를 다 뒤집니다.
-        rows = soup.select('.board_list tbody tr')
-        for row in rows[:10]: 
-            try:
-                date_text = row.select('td')[3].get_text(strip=True).replace('.', '-')
-                if date_text == today:
-                    title = row.select_one('td.subject a').get_text(strip=True)
-                    link = "https://www.kvic.or.kr" + row.select_one('td.subject a')['href']
-                    send_telegram(f"🔔 [한국벤처투자] 발견!\n{title}\n{link}")
-                    print(f"전송 완료: {title}")
-            except:
-                continue # 날짜 형식이 다르거나 공지글이면 패스
+        url = "https://www.kvic.or.kr/notice/kvic-notice/investment-business-notice"
+        res = requests.get(url)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        # 첫 번째 게시물 가져오기
+        latest = soup.select('table.board_list tbody tr')[0]
+        date = latest.select('td')[3].text.strip() # 날짜 위치
+        title = latest.select('td.subject a')[0].text.strip()
+        link = "https://www.kvic.or.kr" + latest.select('td.subject a')[0]['href']
+
+        if date == today_dash or date == today_dot:
+            new_posts.append(f"[한국벤처투자]\n{title}\n{link}")
     except Exception as e:
-        print(f"KVIC 오류: {e}")
+        print(f"KVIC Error: {e}")
 
-    # 2. 한국성장금융
+    # === 2. 한국성장금융 (K-Growth / 모바일) ===
     try:
-        url = "https://www.kgrowth.or.kr/notice.asp"
-        res = requests.get(url, headers=headers)
-        res.encoding = 'utf-8'
+        url = "https://m.kgrowth.or.kr/notice.asp?page=1"
+        res = requests.get(url)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        # 모바일 사이트 리스트 구조
+        latest = soup.select('div.notice_list ul li')[0] 
+        date = latest.select('span.date')[0].text.strip()
+        title = latest.select('strong')[0].text.strip()
+        # 링크는 자바스크립트 구조라 기본 공지 페이지로 대체
+        link = "https://m.kgrowth.or.kr/notice.asp"
+
+        if date == today_dash or date == today_dot:
+            new_posts.append(f"[한국성장금융]\n{title}\n{link}")
+    except Exception as e:
+        print(f"K-Growth Error: {e}")
+
+    # === 3. 농업정책보험금융원 (APFS / 키워드 필터링) ===
+    try:
+        url = "https://www.apfs.kr/front/board/boardContentsListPage.do?boardId=10026&menuId=41"
+        res = requests.get(url)
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        rows = soup.select('.tbl_board tbody tr')
-        for row in rows[:10]:
-            try:
-                date_text = row.select('td')[2].get_text(strip=True).replace('.', '-')
-                if date_text == today:
-                    title = row.select_one('td.subject a').get_text(strip=True)
-                    link = "https://www.kgrowth.or.kr/notice.asp"
-                    send_telegram(f"🔔 [한국성장금융] 발견!\n{title}\n{link}")
-            except:
-                continue
+        # 게시물 리스트 순회 (키워드 찾기 위해 상위 3개 정도만 검색)
+        rows = soup.select('div.board_list_wrap tbody tr')
+        for row in rows[:3]:
+            date = row.select('td')[4].text.strip()
+            title = row.select('td.title_left a')[0].text.strip()
+            link_id = row.select('td.title_left a')[0]['onclick'].split("'")[1]
+            link = f"https://www.apfs.kr/front/board/boardContentsView.do?contentsId={link_id}&boardId=10026&menuId=41"
+            
+            # 날짜가 오늘이고, '출자'라는 단어가 포함된 경우만
+            if (date == today_dash or date == today_dot) and ("출자" in title):
+                new_posts.append(f"[농금원-출자]\n{title}\n{link}")
     except Exception as e:
-        print(f"K-Growth 오류: {e}")
+        print(f"APFS Error: {e}")
 
-    # 3. 한국벤처캐피탈협회 (KVCA)
+    # === 4. 한국벤처캐피탈협회 (KVCA) ===
     try:
-        url_kvca = "https://www.kvca.or.kr/Program/invest/list.html?a_gb=board&a_cd=8&a_item=0&sm=2_2_2"
-        res = requests.get(url_kvca, headers=headers)
-        res.encoding = 'utf-8'
+        url = "https://www.kvca.or.kr/Program/invest/list.html?a_gb=board&a_cd=8&a_item=0&sm=2_2_2"
+        res = requests.get(url)
+        res.encoding = 'utf-8' # 한글 깨짐 방지
         soup = BeautifulSoup(res.text, 'html.parser')
-
-        # 테이블의 모든 줄을 가져옵니다
-        rows = soup.select('table tbody tr')
         
-        for row in rows[:10]: # 위에서 10개만 확인
-            try:
-                # KVCA는 날짜가 보통 뒤에서 두 번째 칸에 있습니다.
-                cols = row.select('td')
-                if len(cols) < 3: continue # 내용 없는 줄 패스
+        latest = soup.select('table.list_table tbody tr')[0]
+        date = latest.select('td')[-1].text.strip() # 보통 맨 뒤가 조회수 아니면 날짜
+        # KVCA는 날짜 형식이 다를 수 있어 확인 필요하지만 보통 YYYY.MM.DD
+        title = latest.select('td.subject a')[0].text.strip()
+        link = "https://www.kvca.or.kr/Program/invest/" + latest.select('td.subject a')[0]['href']
 
-                date_text = cols[-2].get_text(strip=True).replace('.', '-')
-                
-                # 오늘 날짜와 똑같으면 전송
-                if date_text == today:
-                    title_tag = row.select_one('a')
-                    title = title_tag.get_text(strip=True)
-                    link_suffix = title_tag['href']
-                    link = f"https://www.kvca.or.kr/Program/invest/{link_suffix}"
-                    
-                    send_telegram(f"🔔 [KVCA] 발견!\n{title}\n{link}")
-            except:
-                continue
+        if date == today_dash or date == today_dot:
+            new_posts.append(f"[KVCA]\n{title}\n{link}")
     except Exception as e:
-        print(f"KVCA 오류: {e}")
+        print(f"KVCA Error: {e}")
 
+    return new_posts
+
+# 실행 및 전송
 if __name__ == "__main__":
-    check_new_post()
+    posts = check_new_post()
+    if posts:
+        message = f"📢 {today_dash} VC 출자사업 알림 ({len(posts)}건)\n\n" + "\n\n".join(posts)
+        asyncio.run(send_msg(message))
+    else:
+        print("새 공고 없음")
