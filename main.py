@@ -1,103 +1,69 @@
-import requests
-from bs4 import BeautifulSoup
-import telegram
-import asyncio
-from datetime import datetime
 import os
+import feedparser
+import requests
+import google.generativeai as genai
 
-# 1단계: 텔레그램 설정 (깃허브 Secrets에서 불러옴)
-TOKEN = os.environ.get('TELEGRAM_TOKEN')
-CHAT_ID = os.environ.get('CHAT_ID')
+# 1. 환경 변수 로드 (GitHub Secrets에서 가져옴)
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
-# 오늘 날짜 구하기 (형식: 2024-02-21 or 2024.02.21)
-today_dash = datetime.now().strftime("%Y-%m-%d")
-today_dot = datetime.now().strftime("%Y.%m.%d")
+# 2. Gemini AI 설정
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
 
-async def send_msg(text):
-    bot = telegram.Bot(token=TOKEN)
-    await bot.send_message(chat_id=CHAT_ID, text=text)
+def get_latest_news(query="스타트업 OR 벤처캐피탈 OR 투자유치", limit=5):
+    """구글 뉴스 RSS를 통해 최신 뉴스 수집"""
+    url = f"https://news.google.com/rss/search?q={query}&hl=ko&gl=KR&ceid=KR:ko"
+    feed = feedparser.parse(url)
+    return feed.entries[:limit]
 
-def check_new_post():
-    new_posts = []
+def generate_insights(title, link):
+    """Gemini를 이용한 요약 및 발제 아이디어 생성"""
+    # 기자님의 교정 스타일을 반영한 페르소나 설정
+    prompt = f"""
+    당신은 머니투데이 유니콘팩토리의 베테랑 기사이자 데스크입니다. 
+    다음 기사를 읽고 전문적인 요약과 취재 발제안을 작성하세요.
+
+    [작성 및 교정 규칙]
+    1. 숫자에 천 단위 쉼표를 절대 쓰지 마세요. (예: 1,000 -> 1000)
+    2. '억원', '천만원' 등 금액 단위는 숫자 뒤에 붙여 쓰세요. (예: 150억 원 -> 150억원)
+    3. 통화 기호나 화폐 단위는 숫자 앞에 붙이세요.
+    4. 문체는 시장 분석가답게 냉철하고 명확하게 작성하세요.
+
+    기사 제목: {title}
+    기사 링크: {link}
+
+    [형식]
+    ■ 핵심 요약: (2~3줄 내외)
+    ■ 취재 발제: (기존 보도와 차별화되는 심층 취재 아이디어 1개)
+    """
     
-    # === 1. 한국벤처투자 (KVIC) ===
     try:
-        url = "https://www.kvic.or.kr/notice/kvic-notice/investment-business-notice"
-        res = requests.get(url)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        # 첫 번째 게시물 가져오기
-        latest = soup.select('table.board_list tbody tr')[0]
-        date = latest.select('td')[3].text.strip() # 날짜 위치
-        title = latest.select('td.subject a')[0].text.strip()
-        link = "https://www.kvic.or.kr" + latest.select('td.subject a')[0]['href']
-
-        if date == today_dash or date == today_dot:
-            new_posts.append(f"[한국벤처투자]\n{title}\n{link}")
+        response = model.generate_content(prompt)
+        return response.text
     except Exception as e:
-        print(f"KVIC Error: {e}")
+        return f"분석 오류 발생: {e}"
 
-    # === 2. 한국성장금융 (K-Growth / 모바일) ===
-    try:
-        url = "https://m.kgrowth.or.kr/notice.asp?page=1"
-        res = requests.get(url)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        # 모바일 사이트 리스트 구조
-        latest = soup.select('div.notice_list ul li')[0] 
-        date = latest.select('span.date')[0].text.strip()
-        title = latest.select('strong')[0].text.strip()
-        # 링크는 자바스크립트 구조라 기본 공지 페이지로 대체
-        link = "https://m.kgrowth.or.kr/notice.asp"
+def send_telegram_message(text):
+    """텔레그램 메시지 전송"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        'chat_id': TELEGRAM_CHAT_ID,
+        'text': text,
+        'parse_mode': 'Markdown',
+        'disable_web_page_preview': True
+    }
+    requests.post(url, data=payload)
 
-        if date == today_dash or date == today_dot:
-            new_posts.append(f"[한국성장금융]\n{title}\n{link}")
-    except Exception as e:
-        print(f"K-Growth Error: {e}")
-
-    # === 3. 농업정책보험금융원 (APFS / 키워드 필터링) ===
-    try:
-        url = "https://www.apfs.kr/front/board/boardContentsListPage.do?boardId=10026&menuId=41"
-        res = requests.get(url)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        # 게시물 리스트 순회 (키워드 찾기 위해 상위 3개 정도만 검색)
-        rows = soup.select('div.board_list_wrap tbody tr')
-        for row in rows[:3]:
-            date = row.select('td')[4].text.strip()
-            title = row.select('td.title_left a')[0].text.strip()
-            link_id = row.select('td.title_left a')[0]['onclick'].split("'")[1]
-            link = f"https://www.apfs.kr/front/board/boardContentsView.do?contentsId={link_id}&boardId=10026&menuId=41"
-            
-            # 날짜가 오늘이고, '출자'라는 단어가 포함된 경우만
-            if (date == today_dash or date == today_dot) and ("출자" in title):
-                new_posts.append(f"[농금원-출자]\n{title}\n{link}")
-    except Exception as e:
-        print(f"APFS Error: {e}")
-
-    # === 4. 한국벤처캐피탈협회 (KVCA) ===
-    try:
-        url = "https://www.kvca.or.kr/Program/invest/list.html?a_gb=board&a_cd=8&a_item=0&sm=2_2_2"
-        res = requests.get(url)
-        res.encoding = 'utf-8' # 한글 깨짐 방지
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        latest = soup.select('table.list_table tbody tr')[0]
-        date = latest.select('td')[-1].text.strip() # 보통 맨 뒤가 조회수 아니면 날짜
-        # KVCA는 날짜 형식이 다를 수 있어 확인 필요하지만 보통 YYYY.MM.DD
-        title = latest.select('td.subject a')[0].text.strip()
-        link = "https://www.kvca.or.kr/Program/invest/" + latest.select('td.subject a')[0]['href']
-
-        if date == today_dash or date == today_dot:
-            new_posts.append(f"[KVCA]\n{title}\n{link}")
-    except Exception as e:
-        print(f"KVCA Error: {e}")
-
-    return new_posts
-
-# 실행 및 전송
 if __name__ == "__main__":
-    posts = check_new_post()
-    if posts:
-        message = f"📢 {today_dash} VC 출자사업 알림 ({len(posts)}건)\n\n" + "\n\n".join(posts)
-        asyncio.run(send_msg(message))
-    else:
-        print("새 공고 없음")
+    articles = get_latest_news(limit=5)
+    
+    header = "🚀 **[Daily VC/Startup Briefing]**\n\n"
+    send_telegram_message(header)
+    
+    for article in articles:
+        content = generate_insights(article.title, article.link)
+        msg = f"🔗 **[{article.title}]({article.link})**\n{content}\n"
+        msg += "──────────────"
+        send_telegram_message(msg)
