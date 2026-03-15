@@ -2,19 +2,22 @@ name: VC News Bot Automation
 
 on:
   schedule:
-    # 매일 아침 8시 실행 (한국 시간 기준)
     - cron: '0 23 * * *'
-  workflow_dispatch: # 수동 실행 버튼 생성
+  workflow_dispatch:
+
+env:
+  # 2026년 Node.js 24 관련 경고를 끄는 설정입니다
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4 # v4로 업데이트
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5 # v5로 업데이트
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
@@ -24,8 +27,6 @@ jobs:
 
       - name: Run news bot
         env:
-          # 여기서 비밀번호(Secrets)를 시스템으로 연결합니다. 
-          # GitHub Settings에서 만든 이름과 정확히 같아야 합니다.
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
